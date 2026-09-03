@@ -1,0 +1,26 @@
+{
+	# Comment this out on the first run if you want; Caddy works without it,
+	# but Let's Encrypt uses it to warn you before a cert expires.
+	email {$ACME_EMAIL}
+}
+
+{$DOMAIN} {
+	encode zstd gzip
+
+	# n8n is not port-published, so this is the only route into it.
+	reverse_proxy n8n:5678 {
+		# Chat / SSE responses stream. Without these two, long agent replies
+		# and the chat UI hang until the whole response is buffered.
+		flush_interval -1
+		transport http {
+			read_timeout 30m
+		}
+	}
+
+	log {
+		output file /data/access.log {
+			roll_size 10mb
+			roll_keep 5
+		}
+	}
+}

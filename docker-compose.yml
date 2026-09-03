@@ -1,0 +1,105 @@
+# Single-host n8n stack for EC2. Postgres for workflow storage, Caddy for TLS.
+#
+# Deploy:  docker compose up -d
+#
+# n8n is deliberately NOT port-published. Caddy is the only way in, which is
+# what makes the security group rule (80/443 only) sufficient.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-n8n}
+      POSTGRES_USER: ${POSTGRES_USER:-n8n}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  n8n:
+    image: docker.n8n.io/n8nio/n8n:latest
+    restart: unless-stopped
+    environment:
+      # --- identity / URLs -------------------------------------------------
+      # WEBHOOK_URL is what n8n prints as the production webhook address.
+      # Without it every generated URL says localhost:5678 and nothing external
+      # can call your workflows.
+      N8N_HOST: ${DOMAIN:?Set DOMAIN in .env}
+      N8N_PROTOCOL: https
+      N8N_PORT: 5678
+      WEBHOOK_URL: https://${DOMAIN}/
+      N8N_EDITOR_BASE_URL: https://${DOMAIN}/
+
+      # Caddy terminates TLS and forwards one hop. Without this n8n reads the
+      # proxy's IP as the client IP and rate limiting / logs are wrong.
+      N8N_PROXY_HOPS: "1"
+
+      # --- secrets ---------------------------------------------------------
+      # Encrypts stored credentials. BACK THIS UP OFF THE BOX. Lose it and
+      # every credential in the instance is unreadable, volume or no volume.
+      N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY:?Set N8N_ENCRYPTION_KEY in .env}
+
+      # --- database --------------------------------------------------------
+      DB_TYPE: postgresdb
+      DB_POSTGRESDB_HOST: postgres
+      DB_POSTGRESDB_PORT: 5432
+      DB_POSTGRESDB_DATABASE: ${POSTGRES_DB:-n8n}
+      DB_POSTGRESDB_USER: ${POSTGRES_USER:-n8n}
+      DB_POSTGRESDB_PASSWORD: ${POSTGRES_PASSWORD}
+
+      # --- scheduling ------------------------------------------------------
+      # Cron fires in n8n's timezone, not the host's. Set both.
+      GENERIC_TIMEZONE: ${TZ:-Asia/Karachi}
+      TZ: ${TZ:-Asia/Karachi}
+
+      # --- execution retention ---------------------------------------------
+      # Without pruning the executions table grows forever and eventually
+      # becomes the largest thing on the disk.
+      EXECUTIONS_DATA_PRUNE: "true"
+      EXECUTIONS_DATA_MAX_AGE: "336"          # hours (14 days)
+      EXECUTIONS_DATA_PRUNE_MAX_COUNT: "50000"
+
+      # No cap on how long one execution may run. Needed for long shell jobs;
+      # set a number of seconds instead if you want a ceiling.
+      EXECUTIONS_TIMEOUT: "-1"
+
+      # --- misc ------------------------------------------------------------
+      N8N_LOG_LEVEL: info
+      N8N_DIAGNOSTICS_ENABLED: "false"
+      N8N_RUNNERS_ENABLED: "true"
+    volumes:
+      - n8n_data:/home/node/.n8n
+      # Anything you want Execute Command / Read File nodes to reach lives here.
+      - ./files:/files
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      DOMAIN: ${DOMAIN}
+      ACME_EMAIL: ${ACME_EMAIL:-}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - n8n
+
+volumes:
+  pg_data:
+  n8n_data:
+  caddy_data:
+  caddy_config:

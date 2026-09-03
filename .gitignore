@@ -1,0 +1,6 @@
+# Real secrets: DOMAIN, POSTGRES_PASSWORD, N8N_ENCRYPTION_KEY.
+# Committing this once means the encryption key is in git history forever.
+.env
+
+# Bind mount for Execute Command / file nodes, and workflow exports.
+files/
