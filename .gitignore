@@ -4,3 +4,7 @@
 
 # Bind mount for Execute Command / file nodes, and workflow exports.
 files/
+
+# Database dumps written by backup.sh.
+backups/
+backup.log

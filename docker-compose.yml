@@ -4,11 +4,23 @@
 #
 # n8n is deliberately NOT port-published. Caddy is the only way in, which is
 # what makes the security group rule (80/443 only) sufficient.
+#
+# Sized for a 2 GB box (t4g.small / t3.small). The memory limits below add up
+# to ~1.6 GB, leaving headroom for the host. Raise them together if you move
+# to a larger instance -- raising one alone just lets it starve the others.
 
 services:
   postgres:
     image: postgres:16-alpine
     restart: unless-stopped
+    # Defaults assume a machine much larger than this one. 50 connections is
+    # far more than n8n opens, and 128 MB of shared buffers fits the limit.
+    command:
+      - postgres
+      - -c
+      - max_connections=50
+      - -c
+      - shared_buffers=128MB
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-n8n}
       POSTGRES_USER: ${POSTGRES_USER:-n8n}
@@ -21,9 +33,19 @@ services:
       timeout: 5s
       retries: 10
       start_period: 20s
+    mem_limit: 512m
+    # Docker's default json-file driver has no size cap. On a 20 GB disk an
+    # unrotated log is what eventually fills it.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   n8n:
-    image: docker.n8n.io/n8nio/n8n:latest
+    # Pinned on purpose -- see N8N_VERSION in .env. `latest` means a routine
+    # `docker compose pull` can drop a breaking major on you with no warning.
+    image: docker.n8n.io/n8nio/n8n:${N8N_VERSION:?Set N8N_VERSION in .env}
     restart: unless-stopped
     environment:
       # --- identity / URLs -------------------------------------------------
@@ -65,9 +87,28 @@ services:
       EXECUTIONS_DATA_MAX_AGE: "336"          # hours (14 days)
       EXECUTIONS_DATA_PRUNE_MAX_COUNT: "50000"
 
-      # No cap on how long one execution may run. Needed for long shell jobs;
-      # set a number of seconds instead if you want a ceiling.
-      EXECUTIONS_TIMEOUT: "-1"
+      # --- limits ----------------------------------------------------------
+      # One hour ceiling per execution. A stuck HTTP node otherwise holds its
+      # slot forever. Raise EXECUTIONS_TIMEOUT if you have legitimately long
+      # jobs; EXECUTIONS_TIMEOUT_MAX is the hard cap a workflow may request.
+      EXECUTIONS_TIMEOUT: "3600"
+      EXECUTIONS_TIMEOUT_MAX: "7200"
+
+      # 2 GB of RAM cannot absorb unbounded parallel executions. Queued work
+      # waits instead of the container being OOM-killed mid-run.
+      N8N_CONCURRENCY_PRODUCTION_LIMIT: "5"
+
+      # Keep Node's heap under the container limit so it garbage-collects
+      # instead of getting killed. Must stay below mem_limit below.
+      NODE_OPTIONS: "--max-old-space-size=768"
+
+      # --- node sandboxing --------------------------------------------------
+      # Anyone who can log into the editor can run code. These two keep that
+      # blast radius inside /files and out of the container's environment
+      # (which holds N8N_ENCRYPTION_KEY and the database password).
+      # Drop N8N_BLOCK_ENV_ACCESS_IN_NODE if a workflow genuinely needs $env.
+      N8N_BLOCK_ENV_ACCESS_IN_NODE: "true"
+      N8N_RESTRICT_FILE_ACCESS_TO: /files
 
       # --- misc ------------------------------------------------------------
       N8N_LOG_LEVEL: info
@@ -77,6 +118,18 @@ services:
       - n8n_data:/home/node/.n8n
       # Anything you want Execute Command / Read File nodes to reach lives here.
       - ./files:/files
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:5678/healthz || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+    mem_limit: 1g
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     depends_on:
       postgres:
         condition: service_healthy
@@ -87,6 +140,9 @@ services:
     ports:
       - "80:80"
       - "443:443"
+      # HTTP/3. Requires inbound UDP 443 in the security group -- if you did
+      # not open it, delete this line rather than leaving a port that only
+      # ever times out.
       - "443:443/udp"
     environment:
       DOMAIN: ${DOMAIN}
@@ -95,6 +151,12 @@ services:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
       - caddy_config:/config
+    mem_limit: 128m
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     depends_on:
       - n8n
 
