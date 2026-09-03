@@ -1,8 +1,11 @@
-{
-	# Comment this out on the first run if you want; Caddy works without it,
-	# but Let's Encrypt uses it to warn you before a cert expires.
-	email {$ACME_EMAIL}
-}
+# Optional: uncomment and set a real address to get Let's Encrypt expiry
+# warnings. Caddy renews automatically either way, so this is a safety net,
+# not a requirement. An EMPTY value here is a parse error -- either give the
+# directive a real address or leave the whole block commented out.
+#
+# {
+# 	email you@example.com
+# }
 
 {$DOMAIN} {
 	encode zstd gzip

@@ -11,7 +11,8 @@
 
 services:
   postgres:
-    image: postgres:16-alpine
+    # n8n treats Postgres 16 as compatibility-only and asks for 17+.
+    image: postgres:17-alpine
     restart: unless-stopped
     # Defaults assume a machine much larger than this one. 50 connections is
     # far more than n8n opens, and 128 MB of shared buffers fits the limit.
@@ -26,7 +27,10 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-n8n}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
     volumes:
-      - pg_data:/var/lib/postgresql/data
+      # A Postgres data directory is version-specific: 17 cannot read a 16
+      # directory. Upgrading means a new volume plus a dump/restore, never a
+      # tag bump on its own.
+      - pg_data_17:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
       interval: 10s
@@ -58,9 +62,11 @@ services:
       WEBHOOK_URL: https://${DOMAIN}/
       N8N_EDITOR_BASE_URL: https://${DOMAIN}/
 
-      # Caddy terminates TLS and forwards one hop. Without this n8n reads the
-      # proxy's IP as the client IP and rate limiting / logs are wrong.
-      N8N_PROXY_HOPS: "1"
+      # Number of proxies in front of n8n. Caddy alone is 1. Add one per extra
+      # layer -- behind Cloudflare's orange cloud it is 2. Get this wrong and
+      # n8n treats the proxy's IP as the client IP, so rate limiting and the
+      # access logs both point at the wrong address.
+      N8N_PROXY_HOPS: ${N8N_PROXY_HOPS:-1}
 
       # --- secrets ---------------------------------------------------------
       # Encrypts stored credentials. BACK THIS UP OFF THE BOX. Lose it and
@@ -161,7 +167,12 @@ services:
       - n8n
 
 volumes:
+  # The pre-upgrade Postgres 16 directory. Kept as a rollback path -- delete
+  # it with `docker volume rm n8n-deployment_pg_data` once 17 has proven
+  # itself. Note that `docker compose down -v` would take it with everything
+  # else, so do not rely on it as a backup.
   pg_data:
+  pg_data_17:
   n8n_data:
   caddy_data:
   caddy_config:

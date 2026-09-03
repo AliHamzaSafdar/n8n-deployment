@@ -13,6 +13,15 @@ set -euo pipefail
 
 cd "$(dirname "$0")"
 
+# cron runs with almost no environment, so BACKUP_S3 and friends have to be
+# read from .env explicitly -- without this the S3 upload silently never
+# happens and you find out when you need the backup.
+if [ -f .env ]; then
+  set -a
+  . ./.env
+  set +a
+fi
+
 BACKUP_DIR="${BACKUP_DIR:-./backups}"
 KEEP_DAYS="${KEEP_DAYS:-14}"
 BACKUP_S3="${BACKUP_S3:-}"

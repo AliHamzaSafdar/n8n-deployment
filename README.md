@@ -112,7 +112,8 @@ docker compose pull && docker compose up -d
 ### Backups
 
 Everything you build lives in Postgres. `backup.sh` dumps it, exports workflow
-JSON, verifies the gzip, and prunes dumps older than `KEEP_DAYS`:
+JSON, verifies the gzip, and prunes dumps older than `KEEP_DAYS`. It sources
+`.env` itself, because cron runs with almost no environment:
 
 ```bash
 chmod +x backup.sh
@@ -149,5 +150,28 @@ gunzip -c backups/n8n-<stamp>.sql.gz | docker compose exec -T postgres psql -U n
   not preferences -- raise them only alongside `mem_limit` and `NODE_OPTIONS`.
 - **Manual runs never fire the Error Workflow.** Only scheduled, webhook, and
   sub-workflow executions do.
+- **Changing `N8N_ENCRYPTION_KEY` after first boot is not a one-line edit.**
+  n8n stamps the key into `/home/node/.n8n/config` inside the `n8n_data`
+  volume on first run, and refuses to start when the two disagree:
+  `Mismatching encryption keys`. To change it, update the settings file too:
+
+  ```bash
+  docker compose stop n8n
+  docker compose run --rm -T --entrypoint sh n8n -c \
+    'printf "{\"encryptionKey\":\"%s\"}" "$N8N_ENCRYPTION_KEY" > /home/node/.n8n/config'
+  docker compose up -d n8n
+  ```
+
+  Only safe while nothing is encrypted under the old key -- otherwise every
+  existing credential becomes unreadable.
+- **`docker compose run` steals stdin.** It will silently eat the rest of a
+  heredoc-driven remote script. Add `</dev/null` to every such call.
+- **Importing workflows deactivates them.** `n8n import:workflow` logs
+  `Deactivating workflow "..."` for anything that was active in the export.
+  Re-enable them by hand after a migration.
+- **A Postgres major upgrade needs a dump and restore.** The data directory is
+  version-specific, so bumping the image tag alone leaves the container unable
+  to start. Dump, point the service at a fresh volume, restore, and keep the
+  old volume until the new one has proven itself.
 - **Credentials do not travel in exported workflow JSON**, by design. After
   importing on a new instance you re-select credentials per node.
